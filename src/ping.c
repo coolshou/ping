@@ -9,6 +9,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
+#include <getopt.h>
 
 #ifdef _WIN32
 
@@ -247,11 +249,33 @@ static uint16_t compute_checksum(const char *buf, size_t size)
     return (uint16_t)~sum;
 }
 
+void current_time(char *timestempformat) {
+    time_t rawtime;
+    struct tm *timeinfo;
+    char buffer[80];
+
+    time(&rawtime);
+    timeinfo = localtime(&rawtime);
+
+    strftime(buffer, sizeof(buffer), "%Y%m%d_%H:%M:%S ", timeinfo);
+    //strftime(buffer, sizeof(buffer), &timestempformat, timeinfo);
+    printf("%s", buffer);
+}
+
+void help(char **argv){
+    printf("Usage: %s [-4] [-6] [-t[format]] hostname\n", argv[0]);
+    printf("\t [-4] IPv4 hostname\n");
+    printf("\t [-6] IPv6 hostname\n");
+    printf("\t [-t] show timestemp, default format: '%%Y%%m%%d_%%H:%%M:%%S'\n");
+}
+
 int main(int argc, char **argv)
 {
     int i;
     char *hostname = NULL;
     int ip_version = IP_VERSION_ANY;
+    int showtimestemp = 0;
+    char *timestempformat = NULL;
     int error;
     socket_t sockfd = -1;
     struct addrinfo *addrinfo_list = NULL;
@@ -263,19 +287,60 @@ int main(int argc, char **argv)
     uint16_t seq;
     uint64_t start_time;
     uint64_t delay;
+    int opt;
+    
+    static struct option long_options[] = {
+        {"ipv4", no_argument, 0, '4'},
+        {"ipv6", no_argument, 0, '6'},
+        {"hostname", required_argument, 0, 'h'},
+        {"timestemp", required_argument, 0, 't'},
+        {0, 0, 0, 0}
+    };
 
-    for (i = 1; i < argc; i++) {
-        if (strcmp(argv[i], "-4") == 0) {
-            ip_version = IP_V4;
-        } else if (strcmp(argv[i], "-6") == 0) {
-            ip_version = IP_V6;
+// Parse command-line options
+    //while ((opt = getopt(argc, argv, "46ht::")) != -1) {
+    int option_index = 0;
+    while ((opt = getopt_long(argc, argv, "46ht::", long_options, &option_index)) != -1) {
+        switch (opt) {
+            case 't':
+                showtimestemp=1;
+                timestempformat = optarg;
+                if (timestempformat== NULL){
+                    //# default format
+                    timestempformat="%Y-%m-%d_%H:%M:%S";
+                }
+                break;
+            case '4':
+                ip_version = IP_V4;
+                break;
+            case '6':
+                ip_version = IP_V6;
+                break;
+            case 'h':
+                // Print usage information
+                help(argv);
+                return 0;
+            case '?':
+                // Invalid option
+                help(argv);
+                return 1;
+            default:
+                help(argv);
+        }
+    }
+    // Process non-option arguments
+    for (; optind < argc; optind++) {
+        // Assuming only one hostname argument is expected
+        if (hostname == NULL) {
+            hostname = argv[optind];
         } else {
-            hostname = argv[i];
+            fprintf(stderr, "Error: Only one hostname argument is expected.\n");
+            return 1;
         }
     }
 
     if (hostname == NULL) {
-        fprintf(stderr, "Usage: ping [-4|-6] <hostname>\n");
+        help(argv);
         goto exit_error;
     }
 
@@ -402,7 +467,7 @@ int main(int argc, char **argv)
               sizeof(addr_str));
 
     printf("PING %s (%s)\n", hostname, addr_str);
-
+    fflush(stdout);
     for (seq = 0; ; seq++) {
         struct icmp request;
 
@@ -507,7 +572,11 @@ int main(int argc, char **argv)
                 if (errno == EAGAIN) {
 #endif
                     if (delay > REQUEST_TIMEOUT) {
-                        printf("Request timed out\n");
+                        if (showtimestemp){
+                            current_time(timestempformat);
+                        }
+                        printf("Request timed out: seq=%d\n", seq);
+                        fflush(stdout);
                         goto next;
                     } else {
                         /* No data available yet, try to receive again. */
@@ -610,12 +679,15 @@ int main(int argc, char **argv)
                 checksum = compute_checksum(msg_buf + ip_hdr_len,
                                             msg_len - ip_hdr_len);
             }
-
+            if (showtimestemp){
+                current_time(timestempformat);
+            }
             printf("Received reply from %s: seq=%d, time=%.3f ms%s\n",
                    addr_str,
                    seq,
                    (double)delay / 1000.0,
                    reply_checksum != checksum ? " (bad checksum)" : "");
+            fflush(stdout);
             break;
         }
 
