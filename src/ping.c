@@ -53,9 +53,12 @@ static LPFN_WSARECVMSG WSARecvMsg;
 #include <netinet/in_systm.h>
 #include <netinet/ip.h>
 #include <netinet/ip_icmp.h>  /* struct icmp */
+//#include <netinet/icmp6.h>
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <sys/types.h>
+
+#include "cping.h"
 
 typedef int socket_t;
 typedef struct msghdr msghdr_t;
@@ -69,6 +72,7 @@ typedef struct cmsghdr cmsghdr_t;
 
 #define ICMP_HEADER_LENGTH 8
 #define MESSAGE_BUFFER_SIZE 1024
+#define ICMP_PAYLOAD_SIZE 32  // Define the size of the ICMP payload buffer
 
 #ifndef ICMP_ECHO
     #define ICMP_ECHO 8
@@ -83,8 +87,8 @@ typedef struct cmsghdr cmsghdr_t;
     #define ICMP6_ECHO_REPLY 129
 #endif
 
-#define REQUEST_TIMEOUT 1000000
-#define REQUEST_INTERVAL 1000000
+#define REQUEST_TIMEOUT 1000000  //microsecond, us => 1sec
+#define REQUEST_INTERVAL 1000000  //microsecond, us => 1sec
 
 #ifdef _WIN32
     #define socket(af, type, protocol) \
@@ -105,6 +109,9 @@ typedef struct cmsghdr cmsghdr_t;
     typedef unsigned __int16 uint16_t;
     typedef unsigned __int32 uint32_t;
     typedef unsigned __int64 uint64_t;
+    #ifndef EAI_SYSTEM
+        #define EAI_SYSTEM	  -11
+    #endif
 #endif
 
 struct icmp {
@@ -263,17 +270,25 @@ void current_time(char *timestempformat) {
 }
 
 void help(char **argv){
-    printf("Usage: %s [-4] [-6] [-t[format]] hostname\n", argv[0]);
-    printf("\t [-4] IPv4 hostname\n");
-    printf("\t [-6] IPv6 hostname\n");
-    printf("\t [-t] show timestemp, default format: '%%Y%%m%%d_%%H:%%M:%%S'\n");
+    //printf("Usage: %s [-4] [-6] [-n num] [-l size] [-S srcaddr] [-t[format]] hostname\n", argv[0]);
+    printf("Usage: %s [-4] [-6] [-n num] [-l size] [-t[format]] hostname\n", argv[0]);
+    printf("\t [-n num]     Number of echo requests to send (without this option, it will ping continue)\n");
+    printf("\t [-l size]     Send buffer size\n");
+    //printf("\t [-S srcaddr]     Source address to use\n");
+    printf("\t [-4]     Force using IPv4\n");
+    printf("\t [-6]     Force using IPv6\n");
+    printf("\t [-t]     show timestemp, default format: '%%Y%%m%%d_%%H:%%M:%%S'\n");
 }
 
 int main(int argc, char **argv)
 {
     int i;
     char *hostname = NULL;
+    // char *srcaddr = NULL;
     int ip_version = IP_VERSION_ANY;
+    // Allocate space for the ICMP payload buffer
+    // char icmp_payload[ICMP_PAYLOAD_SIZE];
+    int icmp_payload_size=ICMP_PAYLOAD_SIZE;
     int showtimestemp = 0;
     char *timestempformat = NULL;
     int error;
@@ -288,20 +303,35 @@ int main(int argc, char **argv)
     uint64_t start_time;
     uint64_t delay;
     int opt;
+    int max_num=0; // number of echo request
     
     static struct option long_options[] = {
+        {"num", no_argument, 0, 'n'},
+        {"size", no_argument, 0, 'l'},
+        //{"srcaddr", no_argument, 0, 'S'},
         {"ipv4", no_argument, 0, '4'},
         {"ipv6", no_argument, 0, '6'},
         {"hostname", required_argument, 0, 'h'},
         {"timestemp", required_argument, 0, 't'},
+        {"version", required_argument, 0, 'v'},
         {0, 0, 0, 0}
     };
 
 // Parse command-line options
     //while ((opt = getopt(argc, argv, "46ht::")) != -1) {
     int option_index = 0;
-    while ((opt = getopt_long(argc, argv, "46ht::", long_options, &option_index)) != -1) {
+    while ((opt = getopt_long(argc, argv, "vn:l:46ht::", long_options, &option_index)) != -1) {
         switch (opt) {
+            case 'n': //num of echo request
+                max_num = atoi(optarg);
+                break;
+            case 'l':
+                icmp_payload_size = atoi(optarg);
+                break;
+            // case 'S':
+            //     srcaddr = optarg;
+            //     printf("srcaddr : %s\n",  srcaddr);
+            //     break;
             case 't':
                 showtimestemp=1;
                 timestempformat = optarg;
@@ -319,6 +349,9 @@ int main(int argc, char **argv)
             case 'h':
                 // Print usage information
                 help(argv);
+                return 0;
+            case 'v':
+                printf("%s\n", VER_FILEVERSION_STR);
                 return 0;
             case '?':
                 // Invalid option
@@ -370,7 +403,11 @@ int main(int argc, char **argv)
                             &addrinfo_list);
     }
     if (error != 0) {
-        fprintf(stderr, "getaddrinfo: %s\n", gai_strerror(error));
+        if (error == EAI_SYSTEM){
+            fprintf(stderr, "getaddrinfo: %s\n", strerror(errno));
+        }else{
+            fprintf(stderr, "getaddrinfo: %s\n", gai_strerror(error));
+        }
         goto exit_error;
     }
 
@@ -384,11 +421,16 @@ int main(int argc, char **argv)
             break;
         }
     }
-
     if ((int)sockfd < 0) {
         psockerror("socket");
         goto exit_error;
     }
+    // char icmp_payload[icmp_payload_size];
+    // Allocate space for the ICMP payload buffer
+    char *icmp_payload = (char *)malloc(icmp_payload_size);
+    // Fill the ICMP payload buffer with some data (if needed)
+    // For example, you might fill it with zeros or some specific data
+    memset(icmp_payload, 255, icmp_payload_size);
 
     memcpy(&addr, addrinfo->ai_addr, addrinfo->ai_addrlen);
     dst_addr_len = (socklen_t)addrinfo->ai_addrlen;
@@ -466,9 +508,15 @@ int main(int argc, char **argv)
               addr_str,
               sizeof(addr_str));
 
-    printf("PING %s (%s)\n", hostname, addr_str);
+    printf("Pinging %s (%s)\n", hostname, addr_str);
     fflush(stdout);
     for (seq = 0; ; seq++) {
+        if (max_num>0){
+            if (seq>=max_num){
+                break;
+            }
+        }
+        
         struct icmp request;
 
         request.icmp_type =
@@ -477,6 +525,40 @@ int main(int argc, char **argv)
         request.icmp_cksum = 0;
         request.icmp_id = htons(id);
         request.icmp_seq = htons(seq);
+#if !defined _WIN32
+    //TODO: mingw64 how to add payload?
+        // Copy the ICMP payload into the request packet
+        memcpy(request.icmp_data, icmp_payload, icmp_payload_size);
+#endif
+        
+    //    // Allocate space for the ICMP packet
+    //    unsigned long icmphdr_size;
+    //     if (addr.ss_family == AF_INET6) {
+    //         icmphdr_size = sizeof(struct icmp6_hdr);
+    //     } else{
+    //         icmphdr_size = sizeof(struct icmphdr);
+    //     }
+    //     char icmp_packet[icmp_payload_size + icmphdr_size];
+    //     if (addr.ss_family == AF_INET6) {
+    //         struct icmp6_hdr *request = (struct icmp6_hdr *)icmp_packet;
+    //         // Fill the ICMPv6 header
+    //         request->icmp6_type = ICMP6_ECHO;
+    //         request->icmp6_code = 0;
+    //         request->icmp6_cksum = 0;
+    //         request->icmp6_dataun.icmp6_un_data16[0] = htons(id);
+    //         request->icmp6_dataun.icmp6_un_data16[1] = htons(seq);
+    //     } else {
+    //         struct icmphdr *request = (struct icmphdr *)icmp_packet;
+    //         // Fill the ICMP header
+    //         request->type = ICMP_ECHO;
+    //         request->code = 0;
+    //         request->checksum = 0;
+    //         request->un.echo.id = htons(id);
+    //         request->un.echo.sequence = htons(seq);
+    //     }
+    //     // Fill the ICMP payload with some data (if needed)
+    //     // For example, you might fill it with zeros or some specific data
+    //     memset(icmp_packet + icmphdr_size, 0, icmp_payload_size);
 
         if (addr.ss_family == AF_INET6) {
             /*
@@ -496,15 +578,34 @@ int main(int argc, char **argv)
             request_packet.icmp = request;
 
             request.icmp_cksum = compute_checksum((char *)&request_packet,
-                                                  sizeof(request_packet));
+                                                   sizeof(request_packet));
+            // request->checksum = compute_checksum((char *)&request_packet,
+            //                                       sizeof(request_packet));                                                  
         } else {
             request.icmp_cksum = compute_checksum((char *)&request,
-                                                  sizeof(request));
+                                                  sizeof(request)+ icmp_payload_size);
+            // request->checksum = compute_checksum((char *)&request,
+            //                                       sizeof(request)+ icmp_payload_size);
         }
-
+        
+        // if (srcaddr != NULL) {
+        //     // Initialize sockaddr_in structure
+        //     int local_port = 12345; // Example port number
+        //     struct sockaddr_in local_addr;
+        //     memset(&local_addr, 0, sizeof(local_addr));
+        //     local_addr.sin_family = AF_INET;
+        //     local_addr.sin_addr.s_addr = inet_addr(srcaddr);
+        //     local_addr.sin_port = htons(local_port);
+        //     // Bind the socket to a specific local address (source address)
+        //     if (bind(sockfd, (struct sockaddr *)&local_addr, sizeof(local_addr)) < 0) {
+        //         perror("bind");
+        //         // Error handling if binding fails
+        //         goto exit_error;
+        //     }
+        // }
         error = (int)sendto(sockfd,
                             (char *)&request,
-                            sizeof(request),
+                            sizeof(request)+ icmp_payload_size,
                             0,
                             (struct sockaddr *)&addr,
                             (int)dst_addr_len);
@@ -682,7 +783,7 @@ int main(int argc, char **argv)
             if (showtimestemp){
                 current_time(timestempformat);
             }
-            printf("Received reply from %s: seq=%d, time=%.3f ms%s\n",
+            printf("Reply from %s: seq=%d, time=%.3f ms%s\n",
                    addr_str,
                    seq,
                    (double)delay / 1000.0,

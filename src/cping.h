@@ -1,0 +1,11 @@
+#define VER_FILEVERSION 2024, 5, 9, 0
+#define VER_FILEVERSION_STR "2024.5.9.0\0"
+
+#define VER_PRODUCTVERSION 1, 0, 0, 0
+#define VER_PRODUCTVERSION_STR "1.0\0"
+
+#ifndef DEBUG
+#define VER_DEBUG 0
+#else
+#define VER_DEBUG VS_FF_DEBUG
+#endif
